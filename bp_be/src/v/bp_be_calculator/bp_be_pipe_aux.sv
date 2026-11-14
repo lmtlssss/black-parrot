@@ -105,24 +105,61 @@ module bp_be_pipe_aux
   //
   // FCVT Int -> Float
   //
+  //   One conversion at each result precision, so that the integer is rounded once.
+  //   A 64-bit integer is not a single, and rounding it to double first can change the single.
   bp_hardfloat_raw_dp_s i2f_result;
   rv64_fflags_s i2f_fflags;
 
-  bp_hardfloat_rec_dp_s i2f_rec;
   wire irs1_unsigned = decode.fu_op inside {e_aux_op_iu2f};
+
+  // dword -> double conversion
+  bp_hardfloat_rec_dp_s i2d_rec;
+  rv64_fflags_s i2d_fflags;
   iNToRecFN
    #(.intWidth(dword_width_gp)
      ,.expWidth(dp_exp_width_gp)
      ,.sigWidth(dp_sig_width_gp)
      )
-   i2f
+   i2d
     (.control(control_li)
      ,.signedIn(!irs1_unsigned)
      ,.in(irs1)
      ,.roundingMode(frm_li)
-     ,.out(i2f_rec)
-     ,.exceptionFlags(i2f_fflags)
+     ,.out(i2d_rec)
+     ,.exceptionFlags(i2d_fflags)
      );
+
+  // dword -> single conversion
+  bp_hardfloat_rec_sp_s i2s_rec;
+  rv64_fflags_s i2s_fflags;
+  iNToRecFN
+   #(.intWidth(dword_width_gp)
+     ,.expWidth(sp_exp_width_gp)
+     ,.sigWidth(sp_sig_width_gp)
+     )
+   i2s
+    (.control(control_li)
+     ,.signedIn(!irs1_unsigned)
+     ,.in(irs1)
+     ,.roundingMode(frm_li)
+     ,.out(i2s_rec)
+     ,.exceptionFlags(i2s_fflags)
+     );
+
+  // The single carried as a double, as bp_be_fp_box does. This is exact
+  localparam i2s_bias_adj_lp = (1 << dp_exp_width_gp) - (1 << sp_exp_width_gp);
+  bp_hardfloat_rec_dp_s i2s2d_rec;
+  wire [dp_exp_width_gp:0] i2s_adjusted_exp = i2s_rec.exp + i2s_bias_adj_lp;
+  wire [2:0]                   i2s_exp_code = i2s_rec.exp[sp_exp_width_gp-:3];
+  wire                          i2s_special = (i2s_exp_code == '0) || (i2s_exp_code >= 3'd6);
+  assign i2s2d_rec = '{sign  : i2s_rec.sign
+                       ,exp  : i2s_special ? {i2s_exp_code, i2s_adjusted_exp[0+:dp_exp_width_gp-2]} : i2s_adjusted_exp
+                       ,fract: {i2s_rec.fract, (dp_sig_width_gp-sp_sig_width_gp)'(0)}
+                       };
+
+  bp_hardfloat_rec_dp_s i2f_rec;
+  assign i2f_rec    = ops_v ? i2s2d_rec  : i2d_rec;
+  assign i2f_fflags = ops_v ? i2s_fflags : i2d_fflags;
 
   bp_hardfloat_raw_dp_s i2f_raw;
   logic [dp_sig_width_gp:0] i2f_sig;
